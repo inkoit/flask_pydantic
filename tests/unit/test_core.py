@@ -1,4 +1,4 @@
-from typing import NamedTuple, Optional, Type, Union, List
+from typing import NamedTuple, Optional, Type, Union, List, Dict
 
 import pytest
 from flask import jsonify
@@ -75,7 +75,7 @@ validate_test_cases = [
                 "validation_error": {
                     "query_params": [
                         {
-                            "loc": ["q1"],
+                            "loc": ["__root__", "q1"],
                             "msg": "field required",
                             "type": "value_error.missing",
                         }
@@ -88,31 +88,11 @@ validate_test_cases = [
     ),
     pytest.param(
         ValidateParams(
-            body_model=RequestBodyModel,
             expected_response_body={
                 "validation_error": {
                     "body_params": [
                         {
-                            "loc": ["root"],
-                            "msg": "is not an array of objects",
-                            "type": "type_error.array",
-                        }
-                    ]
-                }
-            },
-            request_body={"b1": 3.14, "b2": "str"},
-            expected_status_code=400,
-            request_body_many=True,
-        ),
-        id="`request_body_many=True` but in request body is a single object",
-    ),
-    pytest.param(
-        ValidateParams(
-            expected_response_body={
-                "validation_error": {
-                    "body_params": [
-                        {
-                            "loc": ["b1"],
+                            "loc": ["__root__", "b1"],
                             "msg": "field required",
                             "type": "value_error.missing",
                         }
@@ -130,9 +110,9 @@ validate_test_cases = [
                 "validation_error": {
                     "body_params": [
                         {
-                            "loc": ["b1"],
-                            "msg": "field required",
-                            "type": "value_error.missing",
+                            "loc": ["__root__"],
+                            "msg": "value is not a valid dict",
+                            "type": "type_error.dict",
                         }
                     ]
                 }
@@ -279,22 +259,22 @@ class TestValidate:
 
         response = validate(
             query=QueryModel,
-            body=RequestBodyModel,
+            body=List[RequestBodyModel],
             request_body_many=True,
             response_many=True,
         )(f)()
 
-        assert response.status_code == 200
+        assert response.status_code == 200, response.json
         assert response.json == expected_response_body
 
     def test_unsupported_media_type(self, request_ctx, mocker):
         mock_request = mocker.patch.object(request_ctx, "request")
         content_type = "text/plain"
         mock_request.headers = {"Content-Type": content_type}
-        mock_request.get_json = lambda: None
+        mock_request.get_json.side_effect = TypeError("invalid json")
         body_model = RequestBodyModel
         response = validate(body_model)(lambda x: x)()
-        assert response.status_code == 415
+        assert response.status_code == 415, response.json
         assert response.json == {
             "detail": f"Unsupported media type '{content_type}' in request. "
             "'application/json' is required."
@@ -304,10 +284,37 @@ class TestValidate:
         mock_request = mocker.patch.object(request_ctx, "request")
         content_type = "application/json"
         mock_request.headers = {"Content-Type": content_type}
-        mock_request.get_json = lambda: None
+        mock_request.get_json.side_effect = TypeError("invalid json")
         body_model = RequestBodyModel
         with pytest.raises(JsonBodyParsingError):
             validate(body_model)(lambda x: x)()
+
+    def test_custom_types(self, request_ctx, mocker):
+        mock_request = mocker.patch.object(request_ctx, "request")
+        mock_request.args = ImmutableMultiDict({"q1": "param1"})
+        mock_request.get_json = lambda: [
+            {"b11": "str11", "b12": "str12"},
+            {"b21": "str21", "b22": "str22"},
+        ]
+        expected_response_body = [
+            {"q1": "param1", "b11": "str11", "b12": "str12"},
+            {"q1": "param1", "b21": "str21", "b22": "str22"},
+        ]
+
+        def f():
+            query_params = mock_request.query_params
+            body_params = mock_request.body_params
+            return jsonify(
+                [{**query_params, **body_param} for body_param in body_params]
+            )
+
+        response = validate(
+            query=Dict[str, str],
+            body=List[Dict[str, str]],
+        )(f)()
+
+        assert response.status_code == 200, response.json
+        assert response.json == expected_response_body
 
 
 class TestIsIterableOfModels:

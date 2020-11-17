@@ -1,13 +1,12 @@
 from functools import wraps
-from typing import Optional, Callable, TypeVar, Any, Union, Iterable, Type, List
+from typing import Optional, Callable, TypeVar, Any, Union, Iterable, Type
 
 from flask import request, jsonify, make_response, Response, current_app
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, parse_obj_as
 
 from .converters import convert_query_params
 from .exceptions import (
     InvalidIterableOfModelsException,
-    ManyModelValidationError,
     JsonBodyParsingError,
 )
 
@@ -52,26 +51,13 @@ def is_iterable_of_models(content: Any) -> bool:
         return False
 
 
-def validate_many_models(model: Type[BaseModel], content: Any) -> List[BaseModel]:
-    try:
-        return [model(**fields) for fields in content]
-    except TypeError:
-        # iteration through `content` fails
-        err = [
-            {
-                "loc": ["root"],
-                "msg": "is not an array of objects",
-                "type": "type_error.array",
-            }
-        ]
-        raise ManyModelValidationError(err)
-    except ValidationError as ve:
-        raise ManyModelValidationError(ve.errors())
+Body = TypeVar("Body")
+Query = TypeVar("Query")
 
 
 def validate(
-    body: Optional[Type[BaseModel]] = None,
-    query: Optional[Type[BaseModel]] = None,
+    body: Optional[Type[Body]] = None,
+    query: Optional[Type[Query]] = None,
     on_success_status: int = 200,
     exclude_none: bool = False,
     response_many: bool = False,
@@ -136,34 +122,37 @@ def validate(
         @wraps(func)
         def wrapper(*args, **kwargs):
             q, b, err = None, None, {}
+
             query_in_kwargs = func.__annotations__.get("query")
             query_model = query_in_kwargs or query
             if query_model:
-                query_params = convert_query_params(request.args, query_model)
+                query_params = request.args
+                # TODO There must be a better way to do that
                 try:
-                    q = query_model(**query_params)
+                    query_params = convert_query_params(query_params, query_model)
+                except AttributeError:
+                    pass  # seems we've passed non-BaseModel type
+                try:
+                    q = parse_obj_as(query_model, query_params)
                 except ValidationError as ve:
                     err["query_params"] = ve.errors()
+
             body_in_kwargs = func.__annotations__.get("body")
             body_model = body_in_kwargs or body
             if body_model:
-                body_params = request.get_json()
-                if request_body_many:
-                    try:
-                        b = validate_many_models(body_model, body_params)
-                    except ManyModelValidationError as e:
-                        err["body_params"] = e.errors()
-                else:
-                    try:
-                        b = body_model(**body_params)
-                    except TypeError:
-                        content_type = request.headers.get("Content-Type", "").lower()
-                        if content_type != "application/json":
-                            return unsupported_media_type_response(content_type)
-                        else:
-                            raise JsonBodyParsingError()
-                    except ValidationError as ve:
-                        err["body_params"] = ve.errors()
+                try:
+                    body_params = request.get_json()
+                except TypeError:
+                    content_type = request.headers.get("Content-Type", "").lower()
+                    if content_type != "application/json":
+                        return unsupported_media_type_response(content_type)
+                    else:
+                        raise JsonBodyParsingError()
+                try:
+                    b = parse_obj_as(body_model, body_params)
+                except ValidationError as ve:
+                    err["body_params"] = ve.errors()
+
             request.query_params = q
             request.body_params = b
             if query_in_kwargs:

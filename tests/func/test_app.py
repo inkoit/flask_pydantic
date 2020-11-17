@@ -58,7 +58,7 @@ test_cases = [
             "validation_error": {
                 "query_params": [
                     {
-                        "loc": ["limit"],
+                        "loc": ["__root__", "limit"],
                         "msg": "value is not a valid integer",
                         "type": "type_error.integer",
                     }
@@ -75,7 +75,7 @@ test_cases = [
             "validation_error": {
                 "body_params": [
                     {
-                        "loc": ["search_term"],
+                        "loc": ["__root__", "search_term"],
                         "msg": "field required",
                         "type": "value_error.missing",
                     }
@@ -136,7 +136,7 @@ class TestArrayQueryParam:
             "validation_error": {
                 "query_params": [
                     {
-                        "loc": ["arr1"],
+                        "loc": ["__root__", "arr1"],
                         "msg": "field required",
                         "type": "value_error.missing",
                     }
